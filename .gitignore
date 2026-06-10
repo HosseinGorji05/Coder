@@ -1,2 +1,9 @@
 .history/
-.history/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+.DS_Store
+snippet.py
+test_snippet.py

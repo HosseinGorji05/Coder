@@ -10,11 +10,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from core.sandbox import (
+    DEFAULT_IMAGE,
+    DEFAULT_TIMEOUT_SECONDS,
+    docker_available,
+    run_unittest_files,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,8 +42,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image",
-        default="python:3.12-slim",
-        help="Docker image to use (default: python:3.12-slim).",
+        default=DEFAULT_IMAGE,
+        help=f"Docker image to use (default: {DEFAULT_IMAGE}).",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"Seconds before the run is killed (default: {DEFAULT_TIMEOUT_SECONDS}).",
     )
     return parser.parse_args()
 
@@ -49,51 +59,6 @@ def validate_input_file(path: Path, label: str) -> None:
         raise FileNotFoundError(f"{label} does not exist: {path}")
     if not path.is_file():
         raise ValueError(f"{label} must be a file: {path}")
-
-
-def run_unittest_in_docker(code_file: Path, test_file: Path, image: str) -> int:
-    with tempfile.TemporaryDirectory(prefix="isolated-unittest-") as tmp_dir_name:
-        tmp_dir = Path(tmp_dir_name)
-        container_code_name = "snippet.py"
-        container_test_name = "test_snippet.py"
-
-        shutil.copy2(code_file, tmp_dir / container_code_name)
-        shutil.copy2(test_file, tmp_dir / container_test_name)
-
-        docker_cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--workdir",
-            "/workspace",
-            "--volume",
-            f"{tmp_dir}:/workspace:ro",
-            image,
-            "python",
-            "-m",
-            "unittest",
-            container_test_name,
-        ]
-
-        completed = subprocess.run(
-            docker_cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        output = (completed.stdout or "") + (completed.stderr or "")
-        if output.strip():
-            print(output.rstrip())
-
-        if completed.returncode == 0:
-            print("PASS")
-        else:
-            print("FAIL")
-
-        return completed.returncode
 
 
 def main() -> int:
@@ -106,18 +71,22 @@ def main() -> int:
         print(f"Input error: {exc}", file=sys.stderr)
         return 2
 
-    try:
-        return run_unittest_in_docker(args.code_file, args.test_file, args.image)
-    except FileNotFoundError:
+    if not docker_available():
         print(
             "Docker is not installed or not available in PATH. "
             "Install Docker and try again.",
             file=sys.stderr,
         )
         return 3
-    except subprocess.SubprocessError as exc:
-        print(f"Docker execution error: {exc}", file=sys.stderr)
-        return 4
+
+    result = run_unittest_files(
+        args.code_file, args.test_file, image=args.image, timeout=args.timeout
+    )
+
+    if result.output:
+        print(result.output)
+    print(result.summary)
+    return result.returncode
 
 
 if __name__ == "__main__":
