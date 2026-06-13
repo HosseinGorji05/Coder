@@ -256,14 +256,38 @@ def run_executo(
     humaneval_dataset: Path | None = None,
     stream: bool = False,
 ) -> AgentState:
+    initial_state = _prepare_run(
+        task, max_attempts, model, humaneval_task_id, humaneval_dataset
+    )
+    agent = build_agent()
+
+    if not stream:
+        return agent.invoke(initial_state)
+
+    print("Streaming agent progress...\n")
+    final_state: AgentState = dict(initial_state)
+    for event in agent.stream(initial_state, stream_mode="updates"):
+        for node, update in event.items():
+            final_state.update(update)
+            if stream:
+                _print_stream_event(node, update, final_state)
+    return final_state
+
+
+def _prepare_run(
+    task: str,
+    max_attempts: int,
+    model: str,
+    humaneval_task_id: str | None,
+    humaneval_dataset: Path | None,
+) -> AgentState:
+    """Validate environment and build the initial graph state (shared by run/stream)."""
     if not os.environ.get("GROQ_API_KEY"):
         raise RuntimeError(
             "GROQ_API_KEY is not set. Copy .env.example to .env and add your key."
         )
     if not docker_available():
         raise RuntimeError("Docker is not installed or not in PATH.")
-
-    agent = build_agent()
 
     humaneval_test_code = ""
     if humaneval_task_id:
@@ -277,24 +301,40 @@ def run_executo(
         humaneval_test_code = build_humaneval_test(row["entry_point"], row["test"])
         task = f"Complete the following Python function:\n\n{row['prompt']}"
 
-    initial_state: AgentState = {
+    return {
         "task": task,
         "max_attempts": max_attempts,
         "model": model,
         "humaneval_test_code": humaneval_test_code,
     }
 
-    if not stream:
-        return agent.invoke(initial_state)
 
-    print("Streaming agent progress...\n")
+def stream_executo_events(
+    task: str,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    model: str = DEFAULT_MODEL,
+    humaneval_task_id: str | None = None,
+    humaneval_dataset: Path | None = None,
+):
+    """Yield (event_name, state) tuples as the agent runs.
+
+    Events: "start", "generate", "execute", "fix", "done". The state is a fresh
+    snapshot dict on every yield, suitable for driving a UI.
+    """
+    initial_state = _prepare_run(
+        task, max_attempts, model, humaneval_task_id, humaneval_dataset
+    )
+    agent = build_agent()
+
     final_state: AgentState = dict(initial_state)
+    yield "start", dict(final_state)
+
     for event in agent.stream(initial_state, stream_mode="updates"):
         for node, update in event.items():
             final_state.update(update)
-            if stream:
-                _print_stream_event(node, update, final_state)
-    return final_state
+            yield node, dict(final_state)
+
+    yield "done", dict(final_state)
 
 
 def _build_cli_parser():
